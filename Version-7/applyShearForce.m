@@ -22,21 +22,24 @@ function [coords_sheared, force_distribution, Dmat_sheared, freqs_sheared, modes
         displacement_field(i,1) = dx;
     end
     
-    % 3. Calculate local force distribution magnitude
+    % 3. Calculate net linearized elastic force distribution magnitude
+    % The net force on atom i under stiffness matrix K and displacement
+    % field u is the FULL row product F_i = K(idx_i, :) * u_full - not
+    % just the atom's own diagonal self-block K(idx_i,idx_i)*u_i, which
+    % ignores every neighbor's contribution and is not a real force.
     num_atoms = size(coords, 1);
+    u_full = reshape(displacement_field', [], 1);
     force_distribution = zeros(num_atoms, 1);
     for i = 1:num_atoms
         idx_range = (3*i-2):(3*i);
-        u_local = reshape(displacement_field(i,:), [], 1);
-        K_local = K_matrix(idx_range, idx_range);
-        force_distribution(i) = norm(K_local * u_local);
+        force_distribution(i) = norm(K_matrix(idx_range, :) * u_full);
     end
-    
+
     % Normalize force distribution for colormap scaling [0, 1]
     if max(force_distribution) > 0
         force_distribution = force_distribution / max(force_distribution);
     end
-    
+
     % 4. Rebuild dynamical matrix for the sheared configuration
     % Note: Make sure buildDynamicalMatrix is in your working path!
     % buildDynamicalMatrix's real signature is
@@ -47,17 +50,27 @@ function [coords_sheared, force_distribution, Dmat_sheared, freqs_sheared, modes
     % pos itself. So if we pass the ORIGINAL bonds list here, K_sheared
     % comes out identical for every shearVal and the vibrational modes
     % never move. Fix: re-derive each bond's unit vector from the
-    % sheared coordinates before rebuilding K.
+    % sheared geometry before rebuilding K.
+    %
+    % This must be done from the ORIGINAL (minimum-image) relative bond
+    % vector transformed by the affine map, NOT from
+    % coords_sheared(j,:)-coords_sheared(i,:): generateLatticeGeneral.m
+    % builds bonds under periodic minimum-image wrapping, so a bond can
+    % connect an atom to a periodic image of its neighbor: differencing
+    % the raw (unwrapped) sheared coordinates for such a bond silently
+    % points it at the wrong copy of atom j. Applying gamma_eff*S to the
+    % already-correct original bond vector r_old = d0*unit_vector sides
+    % steps this (see the matching note in computeShearForces.m) and is
+    % exactly equivalent to the coordinate-difference formula for any
+    % bond that happens not to wrap.
     bonds_sheared = bonds;
-    for b = 1:size(bonds, 1)
-        i = bonds(b, 1);
-        j = bonds(b, 2);
-        dvec = coords_sheared(j, :) - coords_sheared(i, :);
-        len = norm(dvec);
-        if len > 0
-            bonds_sheared(b, 4:6) = dvec / len;
-        end
-    end
+    gamma_eff = shearVal / span_y;              % this file's dx = shearVal*(y-ymin)/span_y convention
+    r_old = bonds(:, 3) .* bonds(:, 4:6);        % [Nbonds x 3] original (minimum-image) bond vectors
+    newVec = r_old;
+    newVec(:, 1) = newVec(:, 1) + gamma_eff * r_old(:, 2);   % dx = gamma_eff * dy
+    newLen = sqrt(sum(newVec.^2, 2));
+    valid = newLen > 0;
+    bonds_sheared(valid, 4:6) = newVec(valid, :) ./ newLen(valid);
 
     [K_sheared, M_matrix] = buildDynamicalMatrix(coords_sheared, bonds_sheared, springConstant, atomicMasses);
     
