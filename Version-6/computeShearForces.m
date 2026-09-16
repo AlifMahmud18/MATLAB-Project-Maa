@@ -47,13 +47,14 @@ function [coords_sheared, dispField, bondVecs_sheared, bondForceMag, bondForceVe
 %     bonds          - [Nbonds x 6] bond list (i, j, d0, ux0, uy0, uz0),
 %                       exactly the format produced by
 %                       generateLatticeGeneral.m / consumed by
-%                       buildDynamicalMatrix.m. Only columns 1, 2, and 3
-%                       (i, j, d0) are used here - the ORIGINAL unit
-%                       vector in columns 4:6 is intentionally ignored,
-%                       because after shearing the bond direction must
-%                       be recomputed from the new, deformed positions
-%                       (see applyShearForce.m for a worked example of
-%                       exactly this pitfall, and why it matters).
+%                       buildDynamicalMatrix.m. All 6 columns are used:
+%                       d0 and the ORIGINAL (minimum-image) unit vector
+%                       in columns 4:6 together reconstruct the correct
+%                       pre-shear relative bond vector r_old, which the
+%                       affine map is then applied to directly - see the
+%                       note in Step 2 below on why this must NOT be
+%                       done via coords_sheared(j,:)-coords_sheared(i,:)
+%                       for a bond that wraps around the periodic cell.
 %     springConstant - scalar spring constant k (same convention as
 %                       buildDynamicalMatrix.m)
 %     gamma          - scalar engineering shear strain to apply
@@ -91,13 +92,31 @@ function [coords_sheared, dispField, bondVecs_sheared, bondForceMag, bondForceVe
 
     % ---- 2. Recompute every bond's CURRENT vector and length ----
     % (must be re-derived from the sheared geometry - the pre-shear unit
-    % vector in bonds(:,4:6) goes stale the moment gamma ~= 0, exactly
-    % the bug flagged and fixed in applyShearForce.m)
+    % vector in bonds(:,4:6) goes stale the moment gamma ~= 0).
+    %
+    % IMPORTANT: this must NOT be computed as
+    % "coords_sheared(j,:) - coords_sheared(i,:)". generateLatticeGeneral.m
+    % builds bonds under the minimum-image convention, so a bond can
+    % legitimately connect an atom to a PERIODIC IMAGE of its neighbor
+    % (e.g. an atom near one face of the supercell bonded, via wraparound,
+    % to one near the opposite face). Differencing the raw, unwrapped
+    % coords_sheared for such a bond gives the vector to the wrong
+    % (non-image) copy of atom j - silently corrupting a large fraction
+    % of bonds for a typical periodic supercell (37.5% of bonds in the
+    % simple-cubic 1st+2nd-neighbor test case used to catch this).
+    %
+    % The affine map instead transforms RELATIVE vectors directly:
+    % r_new = (I + gamma*S) * r_old, independent of any atom's absolute
+    % position. Applying it to the already-correct (minimum-image)
+    % original bond vector r_old = d0*unit_vector sidesteps the
+    % wraparound issue entirely and is exactly equivalent to the
+    % coordinate-difference formula for any bond that does NOT wrap.
     i_idx = bonds(:, 1);
     j_idx = bonds(:, 2);
     d0    = bonds(:, 3);
+    r_old = d0 .* bonds(:, 4:6);                        % original (minimum-image) bond vectors
 
-    bondVecs_sheared = coords_sheared(j_idx, :) - coords_sheared(i_idx, :);
+    bondVecs_sheared = r_old + gamma * (r_old * S');
     d_new            = sqrt(sum(bondVecs_sheared.^2, 2));
     unit_new         = bondVecs_sheared ./ d_new;       % [Nbonds x 3]
 

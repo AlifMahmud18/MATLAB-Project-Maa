@@ -12,7 +12,7 @@ function [V, eigenvalues, sweeps] = jacobiEigenSolver(A, tol, maxSweeps)
 %   column, since A must stay symmetric).
 %
 %   Doing this once for pair (p,q) can "un-zero" a different pair you
-%   fixed earlier — but each full sweep (looping over every pair once)
+%   fixed earlier - but each full sweep (looping over every pair once)
 %   provably shrinks the sum of squared off-diagonal elements. Repeating
 %   sweeps drives the matrix to (near) diagonal form. The accumulated
 %   product of all rotation matrices converges to the eigenvector matrix
