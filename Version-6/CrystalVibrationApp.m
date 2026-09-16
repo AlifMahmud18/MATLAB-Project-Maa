@@ -34,6 +34,8 @@ classdef CrystalVibrationApp < handle
         ShearControlPanel
         ShearLabel
         ShearSlider
+        RelaxButton
+        RelaxStatusLabel
         UIAxes3D_NoForce
         UIAxes3D_WithForce
         UIAxesMode_NoForce
@@ -229,6 +231,24 @@ classdef CrystalVibrationApp < handle
             app.ShearSlider.Position = [20 720 300 3];
             app.ShearSlider.ValueChangedFcn = @(src, event) app.updateShearAnalysis(event);
 
+            % --- Relaxation (Exp. 5: Gauss-Jordan / Gauss-Seidel) ---
+            % The slider above only ever shows the purely affine (Cauchy-
+            % Born) guess, recomputed live on every drag. Relaxation is a
+            % one-shot linear solve (relaxShearLattice.m) instead - too
+            % slow to run on every slider tick for a larger supercell, so
+            % it is a separate, on-demand button rather than being wired
+            % into ValueChangedFcn.
+            app.RelaxButton = uibutton(app.ShearControlPanel, 'push', ...
+                'Text', 'Relax (Gauss-Jordan, Exp.5)', 'Position', [20 670 300 32], ...
+                'FontWeight', 'bold', 'BackgroundColor', [0.20 0.45 0.80], 'FontColor', 'w', ...
+                'ButtonPushedFcn', @(~, ~) app.RelaxButtonPushed());
+
+            app.RelaxStatusLabel = uilabel(app.ShearControlPanel);
+            app.RelaxStatusLabel.Position = [20 630 310 34];
+            app.RelaxStatusLabel.Text = 'Relax to solve for true equilibrium of interior atoms.';
+            app.RelaxStatusLabel.FontColor = [0.4 0.4 0.4];
+            app.RelaxStatusLabel.WordWrap = 'on';
+
             app.UIAxes3D_NoForce = uiaxes(app.ShearGrid);
             title(app.UIAxes3D_NoForce, 'Pristine Lattice (No Force)')
             app.UIAxes3D_NoForce.Layout.Row = 1;
@@ -286,6 +306,88 @@ classdef CrystalVibrationApp < handle
             
             cla(app.UIAxesMode_WithForce);
             plot(app.UIAxesMode_WithForce, freqs_sh, '-o', 'LineWidth', 1.5, 'Color', 'r');
+        end
+
+        %% ---------------- Relaxation (Exp. 5 linear solve) ----------------
+        function RelaxButtonPushed(app)
+            if isempty(app.pos) || isempty(app.BaseStiffnessMatrix)
+                return;
+            end
+
+            shearVal = app.ShearSlider.Value;
+            k = app.BaseSpringConstant;
+
+            try
+                [coords_relaxed, coords_affine, resBefore, resAfter] = ...
+                    relaxShearLattice(app.pos, app.bonds, k, app.BaseStiffnessMatrix, shearVal, 'gj');
+            catch ME
+                if strcmp(ME.identifier, 'gaussJordanSolve:singular')
+                    app.showAlert(sprintf(['This bond network is too "floppy" to relax (not enough bonds ' ...
+                        'to resist shear away from the fixed top/bottom layers - a Maxwell-rigidity ' ...
+                        'issue). Rebuild with the "1st + 2nd neighbors (recommended, rigid)" bond ' ...
+                        'network and try again.\n\nDetails: %s'], ME.message), 'Cannot Relax');
+                else
+                    app.showAlert(ME.message, 'Relaxation error');
+                end
+                return;
+            end
+
+            [~, elementNames] = getElementDetails(app.masses);
+
+            % Rebuild bond unit vectors for the RELAXED geometry, then
+            % rebuild K/Dmat and re-solve for the relaxed vibrational
+            % spectrum.
+            %
+            % This must NOT be done via
+            % "coords_relaxed(j,:) - coords_relaxed(i,:)" (the same
+            % wraparound pitfall documented and fixed in
+            % computeShearForces.m / applyShearForce.m): bonds can
+            % connect an atom to a periodic image of its neighbor, so
+            % the correct new bond vector is the ORIGINAL (minimum-
+            % image) bond vector plus the per-atom displacement
+            % DIFFERENCE (a well-posed quantity here, since every atom's
+            % displacement - affine for boundary atoms, solved for free
+            % atoms - is already self-consistent with the same K used to
+            % find it).
+            bonds_relaxed = app.bonds;
+            i_idx = app.bonds(:, 1);
+            j_idx = app.bonds(:, 2);
+            dispField_relaxed = coords_relaxed - app.pos;
+            r_old = app.bonds(:, 3) .* app.bonds(:, 4:6);
+            dvec = r_old + (dispField_relaxed(j_idx, :) - dispField_relaxed(i_idx, :));
+            len = sqrt(sum(dvec.^2, 2));
+            valid = len > 0;
+            bonds_relaxed(valid, 4:6) = dvec(valid, :) ./ len(valid);
+
+            [K_relaxed, M_relaxed] = buildDynamicalMatrix(coords_relaxed, bonds_relaxed, k, app.masses);
+            invSqrtM = diag(1 ./ sqrt(diag(M_relaxed)));
+            Dmat_relaxed = invSqrtM * K_relaxed * invSqrtM;
+            [~, eigVals_relaxed] = jacobiEigenSolver(Dmat_relaxed);
+            freqs_relaxed = sqrt(max(sort(eigVals_relaxed), 0));
+
+            % Color by the SIZE of the relaxation correction itself
+            % (|coords_relaxed - coords_affine|) rather than residual
+            % force: free atoms are solved to have ~zero net force by
+            % construction, so a force-colored plot would just look
+            % uniformly "settled" - the correction magnitude instead
+            % shows WHERE the affine guess was wrong and by how much.
+            correctionMag = sqrt(sum((coords_relaxed - coords_affine).^2, 2));
+            if max(correctionMag) > 0
+                correctionMag = correctionMag / max(correctionMag);
+            end
+
+            cla(app.UIAxes3D_WithForce);
+            plotLatticeWithGradient(app.UIAxes3D_WithForce, coords_relaxed, elementNames, correctionMag);
+            title(app.UIAxes3D_WithForce, 'Shear-Deformed Lattice (Relaxed, Exp.5 Gauss-Jordan)');
+
+            cla(app.UIAxesMode_WithForce);
+            plot(app.UIAxesMode_WithForce, freqs_relaxed, '-o', 'LineWidth', 1.5, 'Color', [0.49 0.18 0.56]);
+            title(app.UIAxesMode_WithForce, 'Normal Modes - Sheared (Relaxed)');
+
+            app.RelaxStatusLabel.Text = sprintf(['Max residual force per atom: %.3e before relax -> ' ...
+                '%.3e after (Gauss-Jordan). Move the slider to go back to the live affine view.'], ...
+                resBefore, resAfter);
+            app.RelaxStatusLabel.FontColor = [0.1 0.5 0.1];
         end
 
         function switchToView(app, which)
