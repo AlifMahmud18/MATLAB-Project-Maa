@@ -1,6 +1,8 @@
-function fig = brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cutoff, k, gammaMax, alphaMorse)
+function h = brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cutoff, k, gammaMax, alphaMorse, parent)
 %BRILLOUINSHEARSURFACE 3D phonon dispersion surface w(kx,ky) of a sheared crystal, with a shear-strain slider.
 %   brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cutoff, k, gammaMax, alphaMorse)  (no arguments = simple cubic demo)
+%   brillouinShearSurface(..., parent) opens no window: it builds the surface and its controls
+%   inside `parent` (a uitab, uipanel or uifigure), replacing whatever was in there.
 %   Bonds: every neighbour pair of the unit cell within cutoff, images included; D(k) = M^-1/2 K(k) M^-1/2, K(k) has phases exp(i k.r).
 %   Strain steps come from phononShearSweep (bond rotation, relaxation, Morse rupture); slider value = engineering shear gamma.
 %   Surface = lowest branch(es) on the kz = 0 slice, masked to the first Brillouin zone of the sheared lattice; w < 0 = imaginary.
@@ -12,6 +14,7 @@ function fig = brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cut
     if nargin < 5 || isempty(k), k = 1; end
     if nargin < 6 || isempty(gammaMax), gammaMax = 0.5; end
     if nargin < 7 || isempty(alphaMorse), alphaMorse = 4; end
+    if nargin < 8, parent = []; end
 
     LV = latticeVectors;  nb = size(basisFrac, 1);  masses = basisMasses(:);
     bonds = cellNeighborBonds(LV, basisFrac, cutoff);
@@ -36,22 +39,56 @@ function fig = brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cut
     sweeps = cell(1, 3);  refLam = cell(1, 3);  refMask = cell(1, 3);  cacheLam = cell(3, nSteps);
     mIdx = 3;  busy = false;  floppy = false;
 
-    fig = figure('Name', 'Brillouin-zone dispersion surface under shear', 'NumberTitle', 'off', 'Position', [100 60 1280 740], 'Color', 'w');
-    ax = axes('Parent', fig, 'Units', 'pixels', 'Position', [75 60 800 640]);
-    pnl = uipanel(fig, 'Units', 'pixels', 'Position', [960 15 305 710], 'Title', 'Shear control', 'BackgroundColor', 'w');
-    mk = @(style, str, pos, varargin) uicontrol(pnl, 'Style', style, 'String', str, 'Position', pos, 'BackgroundColor', 'w', varargin{:});
-    mk('text', 'Engineering shear strain gamma', [15 670 275 20], 'HorizontalAlignment', 'left', 'FontWeight', 'bold');
-    sld = mk('slider', '', [15 648 275 18], 'Min', 0, 'Max', gammaMax, 'Value', 0, 'SliderStep', [0.01 0.1], 'Callback', @(s, ~) onSlide(s.Value));
-    addlistener(sld, 'ContinuousValueChange', @(s, ~) onSlide(s.Value));
-    gLabel = mk('text', 'gamma = 0.0000', [15 622 275 20], 'HorizontalAlignment', 'left');
-    mk('text', 'Bond model', [15 594 275 18], 'HorizontalAlignment', 'left');
-    mk('popupmenu', modelNames, [15 568 275 24], 'Value', 3, 'Callback', @(s, ~) onModel(s.Value));
-    cbAll = mk('checkbox', 'Show the 3 lowest branches', [15 540 275 22], 'Value', 0, 'Callback', @(~, ~) onSlide(sld.Value));
-    mk('pushbutton', 'Jump to first zero-touch', [15 500 275 32], 'FontWeight', 'bold', 'ForegroundColor', 'w', ...
-        'BackgroundColor', [0.75 0.15 0.15], 'Callback', @(~, ~) jumpToZeroTouch());
-    mk('pushbutton', 'Reset view', [15 465 275 28], 'Callback', @(~, ~) view(ax, -35, 28));
-    txt = mk('text', '', [15 15 275 440], 'HorizontalAlignment', 'left', 'FontName', 'Consolas', 'FontSize', 9);
-    rotate3d(fig, 'on');
+    % App-Designer components throughout (no uicontrol), so this also works inside a uifigure tab.
+    if isempty(parent)
+        h = uifigure('Name', 'Brillouin-zone dispersion surface under shear', 'Position', [100 60 1280 740], 'Color', 'w');
+    else
+        delete(allchild(parent));
+        h = parent;
+    end
+    root = uigridlayout(h, [1 2]);
+    root.ColumnWidth = {'1x', 330};
+    root.RowHeight = {'1x'};
+    root.Padding = [8 8 8 8];
+    root.ColumnSpacing = 8;
+
+    ax = uiaxes(root);
+    ax.Layout.Row = 1;  ax.Layout.Column = 1;
+    ax.Interactions = [rotateInteraction zoomInteraction dataTipInteraction];
+
+    pnl = uipanel(root, 'Title', 'Shear control', 'BackgroundColor', 'w');
+    pnl.Layout.Row = 1;  pnl.Layout.Column = 2;
+    cg = uigridlayout(pnl, [9 1]);
+    cg.ColumnWidth = {'1x'};
+    cg.RowHeight = {22, 48, 22, 20, 24, 24, 34, 30, '1x'};
+    cg.RowSpacing = 6;
+    cg.Padding = [10 10 10 10];
+    cg.Scrollable = 'on';
+
+    lbl = uilabel(cg, 'Text', 'Engineering shear strain gamma', 'FontWeight', 'bold');
+    lbl.Layout.Row = 1;
+    sld = uislider(cg, 'Limits', [0 gammaMax], 'Value', 0, ...
+        'ValueChangedFcn', @(s, ~) onSlide(s.Value), ...
+        'ValueChangingFcn', @(~, e) onSlide(e.Value));
+    sld.Layout.Row = 2;
+    gLabel = uilabel(cg, 'Text', 'gamma = 0.0000');
+    gLabel.Layout.Row = 3;
+    lbl = uilabel(cg, 'Text', 'Bond model');
+    lbl.Layout.Row = 4;
+    dd = uidropdown(cg, 'Items', modelNames, 'ItemsData', 1:numel(modelNames), 'Value', 3, ...
+        'ValueChangedFcn', @(s, ~) onModel(s.Value));
+    dd.Layout.Row = 5;
+    cbAll = uicheckbox(cg, 'Text', 'Show the 3 lowest branches', 'Value', false, ...
+        'ValueChangedFcn', @(~, ~) onSlide(sld.Value));
+    cbAll.Layout.Row = 6;
+    btn = uibutton(cg, 'push', 'Text', 'Jump to first zero-touch', 'FontWeight', 'bold', ...
+        'FontColor', 'w', 'BackgroundColor', [0.75 0.15 0.15], ...
+        'ButtonPushedFcn', @(~, ~) jumpToZeroTouch());
+    btn.Layout.Row = 7;
+    btn = uibutton(cg, 'push', 'Text', 'Reset view', 'ButtonPushedFcn', @(~, ~) view(ax, -35, 28));
+    btn.Layout.Row = 8;
+    txt = uitextarea(cg, 'Value', {''}, 'Editable', 'off', 'FontName', 'Consolas', 'FontSize', 11);
+    txt.Layout.Row = 9;
     ensureModel(mIdx);
     lam0 = refLam{mIdx};  mask0 = refMask{mIdx};  floppy = isFloppy(lam0, mask0);
     wTop = 1.15 * max(sqrt(max(lam0(:, 3), 0)));  w1max = max(sqrt(max(lam0(:, 1), 0)));
@@ -85,7 +122,7 @@ function fig = brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cut
 
     function ensureModel(m)
         if ~isempty(sweeps{m}), return; end
-        txt.String = {'Computing the strained cell...'};  drawnow;
+        txt.Value = {'Computing the strained cell...'};  drawnow;
         o = struct('k', k, 'gammaMax', gammaMax, 'nSteps', nSteps, 'model', modelOpts{m}{1}, 'prestress', modelOpts{m}{2}, ...
             'allowBreak', modelOpts{m}{3}, 'relax', modelOpts{m}{4}, 'alphaMorse', alphaMorse, 'latticeVectors', LV, 'basisFrac', basisFrac);
         sweeps{m} = phononShearSweep(posCell, bonds, masses, o);
@@ -135,7 +172,7 @@ function fig = brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cut
     end
 
     function update(s)
-        gs = gam(s);  res = sweeps{mIdx};  gLabel.String = sprintf('gamma = %.4f', gs);
+        gs = gam(s);  res = sweeps{mIdx};  gLabel.Text = sprintf('gamma = %.4f', gs);
         mf = bzMetric(gs, Kall);  inside = mf <= 1 + 1e-9;
         lam = cacheLam{mIdx, s};
         if isempty(lam)
@@ -179,13 +216,13 @@ function fig = brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cut
                 failureText(frR)}];
         end
         if floppy, lines = [lines, {'', 'NOTE: this spring network is nearly floppy', 'along some k directions, so small', 'strains can already push w^2 below 0.'}]; end
-        txt.String = lines;
+        txt.Value = lines;
         title(ax, sprintf('\\gamma = %.4f    min \\omega^2 (k\\neq0) = %+.4g', gs, lMin));
         drawnow limitrate;
     end
 
     function jumpToZeroTouch()
-        txt.String = {'Scanning strains for the first zero-touch...'};  drawnow;
+        txt.Value = {'Scanning strains for the first zero-touch...'};  drawnow;
         kc = linspace(-kmax, kmax, 17);  [cx, cy] = meshgrid(kc, kc);  Kc = [cx(:), cy(:), zeros(numel(cx), 1)];
         found = 0;
         for s = 1:3:nSteps
@@ -193,7 +230,7 @@ function fig = brillouinShearSurface(latticeVectors, basisFrac, basisMasses, cut
         end
         if found == 0 && unstableAt(nSteps, Kc), found = nSteps; end
         if found == 0
-            txt.String = [{'No zero-touch up to gamma_max.'}, txt.String(:)'];  return
+            txt.Value = [{'No zero-touch up to gamma_max.'}, txt.Value(:)'];  return
         end
         s = max(found - 2, 1);
         while s < found && ~unstableAt(s, Kc), s = s + 1; end

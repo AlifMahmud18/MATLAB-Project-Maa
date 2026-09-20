@@ -6,14 +6,19 @@ classdef CrystalVibrationApp < handle
     %   "Lattice & Modes" tab: the 3D lattice (hover an atom for its element, via atomHover + getElementDetails)
     %   and the frequency spectrum, both visible at the same time.
     %   "Shear Analysis" tab: shear slider (applyShearForce), Relax button (relaxShearLattice), the pristine and
-    %   sheared lattices with their normal-mode spectra, and the V7 buttons that run phononShearSuite and draw
-    %   plotShearSoftening / plotShearBonds / brillouinShearSurface.
+    %   sheared lattices with their normal-mode spectra, and the V7 buttons that run phononShearSuite.
+    %   Those buttons open no windows either: "Phonon Softening" (P1-P6), "Bond Breaking" (Q1-Q2) and
+    %   "Dispersion Surface" are tabs of this same figure, filled by plotShearSoftening / plotShearBonds /
+    %   brillouinShearSurface drawing into the tab they are handed.
 
     properties (Access = private)
         UIFigure
         TabGroup
         LatticeTab
         ShearTab
+        PhononTab
+        BondTab
+        DispersionTab
         StatusLabel
 
         % Left control column
@@ -122,6 +127,11 @@ classdef CrystalVibrationApp < handle
 
             app.ShearTab = uitab(app.TabGroup, 'Title', 'Shear Analysis');
             app.buildShearTab(app.ShearTab);
+
+            app.PhononTab = uitab(app.TabGroup, 'Title', 'Phonon Softening', 'BackgroundColor', 'w');
+            app.BondTab = uitab(app.TabGroup, 'Title', 'Bond Breaking', 'BackgroundColor', 'w');
+            app.DispersionTab = uitab(app.TabGroup, 'Title', 'Dispersion Surface', 'BackgroundColor', 'w');
+            app.resetAnalysisTabs();
 
             app.StatusLabel = uilabel(mainGrid, ...
                 'Text', 'No file loaded (using default bcc structure).', ...
@@ -270,7 +280,7 @@ classdef CrystalVibrationApp < handle
         function buildShearControls(app, parent)
             g = uigridlayout(parent, [12 1]);
             g.ColumnWidth = {'1x'};
-            g.RowHeight = {22, 50, 34, 44, 26, 28, 34, 34, 34, 34, 76, '1x'};
+            g.RowHeight = {22, 50, 34, 44, 26, 28, 34, 34, 34, 34, 96, '1x'};
             g.RowSpacing = 6;
             g.Padding = [10 10 10 10];
             g.Scrollable = 'on';
@@ -334,10 +344,39 @@ classdef CrystalVibrationApp < handle
             app.AlphaEdit.Layout.Column = 2;
 
             app.AnalysisStatusLabel = uilabel(g, ...
-                'Text', ['Uses the lattice you built. The four axes on the right update live; the P1-P6 / Q1-Q2 ' ...
-                         'sweep plots and the dispersion surface are drawn by the standalone plotting functions.'], ...
+                'Text', ['Uses the lattice you built. The four axes on the right update live; the buttons above ' ...
+                         'fill the Phonon Softening, Bond Breaking and Dispersion Surface tabs of this window.'], ...
                 'WordWrap', 'on', 'VerticalAlignment', 'top', 'FontColor', [0.4 0.4 0.4]);
             app.AnalysisStatusLabel.Layout.Row = 11;
+        end
+
+        function resetAnalysisTabs(app)
+            app.clearAnalysisTab(app.PhononTab, 'phonon');
+            app.clearAnalysisTab(app.BondTab, 'bond');
+            app.clearAnalysisTab(app.DispersionTab, 'dispersion');
+        end
+
+        function clearAnalysisTab(~, tab, kind)
+            % Back to the "press the button" placeholder; also wipes a half-drawn tab after an error.
+            switch kind
+                case 'phonon'
+                    msg = ['Press "Phonon Softening Plots" in the Shear Analysis tab.' newline newline ...
+                           'The six plot groups P1-P6 (softening curve, DOS shift, spectral map, softest mode, ' ...
+                           'stress vs phonon, transport) then appear here as sub-tabs.'];
+                case 'bond'
+                    msg = ['Press "Bond-Breaking Plots" in the Shear Analysis tab.' newline newline ...
+                           'The two plot groups Q1 (where bonds break) and Q2 (when and why) then appear here as sub-tabs.'];
+                otherwise
+                    msg = ['Press "3D Dispersion Surface" in the Shear Analysis tab.' newline newline ...
+                           'The Brillouin-zone surface and its own shear slider, bond-model menu and readout then appear here.'];
+            end
+            delete(allchild(tab));
+            g = uigridlayout(tab, [1 1]);
+            g.Padding = [30 30 30 30];
+            lbl = uilabel(g, 'Text', msg, 'WordWrap', 'on', 'FontColor', [0.4 0.4 0.4], ...
+                'HorizontalAlignment', 'center', 'VerticalAlignment', 'center');
+            lbl.Layout.Row = 1;
+            lbl.Layout.Column = 1;
         end
 
         function setShearControlsEnabled(app, tf)
@@ -356,7 +395,8 @@ classdef CrystalVibrationApp < handle
         end
 
         function TabSelectionChanged(app, event)
-            if event.NewValue ~= app.ShearTab
+            tab = event.NewValue;
+            if tab == app.LatticeTab
                 return;
             end
             if ~app.isBuilt
@@ -364,7 +404,9 @@ classdef CrystalVibrationApp < handle
                 app.showAlert('Please Build & Solve the lattice before running shear analysis.', 'Not Built');
                 return;
             end
-            app.refreshShearViewIfNeeded();
+            if tab == app.ShearTab
+                app.refreshShearViewIfNeeded();
+            end
         end
 
         function refreshShearViewIfNeeded(app)
@@ -382,11 +424,17 @@ classdef CrystalVibrationApp < handle
                 app.showAlert('Please Build & Solve the lattice first.', 'Not Built');
                 return;
             end
+            dlg = uiprogressdlg(app.UIFigure, 'Title', 'Dispersion surface', ...
+                'Message', 'Sweeping the Brillouin zone under shear...', 'Indeterminate', 'on');
+            cleanup = onCleanup(@() close(dlg)); %#ok<NASGU>
             try
                 nb = size(app.AnalysisBasis, 1);
                 brillouinShearSurface(app.AnalysisLV, app.AnalysisBasis, app.masses(1:nb), max(app.bonds(:, 3)), ...
-                    app.BaseSpringConstant, app.GammaMaxEdit.Value, app.AlphaEdit.Value);
+                    app.BaseSpringConstant, app.GammaMaxEdit.Value, app.AlphaEdit.Value, app.DispersionTab);
+                app.TabGroup.SelectedTab = app.DispersionTab;
+                app.AnalysisStatusLabel.Text = 'Dispersion surface drawn in the "Dispersion Surface" tab; it has its own shear slider.';
             catch ME
+                app.clearAnalysisTab(app.DispersionTab, 'dispersion');
                 app.showAlert(ME.message, 'Dispersion surface error');
             end
         end
@@ -398,7 +446,7 @@ classdef CrystalVibrationApp < handle
             end
             dlg = uiprogressdlg(app.UIFigure, 'Title', 'Shear analysis', ...
                 'Message', 'Sweeping shear strain...', 'Indeterminate', 'on');
-            cleanup = onCleanup(@() close(dlg));
+            cleanup = onCleanup(@() close(dlg)); %#ok<NASGU>
             try
                 gmax = app.GammaMaxEdit.Value;
                 k = app.BaseSpringConstant;
@@ -414,12 +462,14 @@ classdef CrystalVibrationApp < handle
                 end
                 if strcmp(kind, 'phonon')
                     dlg.Message = 'Drawing phonon-softening plots...';
-                    plotShearSoftening(c);
-                    msg = 'Phonon softening figures P1-P6 drawn.';
+                    plotShearSoftening(c, '', app.PhononTab);
+                    app.TabGroup.SelectedTab = app.PhononTab;
+                    msg = 'P1-P6 are in the "Phonon Softening" tab.';
                 else
                     dlg.Message = 'Drawing bond-breaking plots...';
-                    plotShearBonds(c);
-                    msg = 'Bond-breaking figures Q1-Q2 drawn.';
+                    plotShearBonds(c, '', app.BondTab);
+                    app.TabGroup.SelectedTab = app.BondTab;
+                    msg = 'Q1-Q2 are in the "Bond Breaking" tab.';
                 end
                 R = c.cases{c.main};
                 gb = min(R.gammaFirstBreak);
@@ -427,6 +477,11 @@ classdef CrystalVibrationApp < handle
                 if isnan(R.gammaInstab), gi = 'none'; else, gi = sprintf('%.3f', R.gammaInstab); end
                 app.AnalysisStatusLabel.Text = sprintf('%s First bond breaks at gamma = %s; lowest mode goes imaginary at gamma = %s.', msg, gbs, gi);
             catch ME
+                if strcmp(kind, 'phonon')
+                    app.clearAnalysisTab(app.PhononTab, 'phonon');
+                else
+                    app.clearAnalysisTab(app.BondTab, 'bond');
+                end
                 app.showAlert(ME.message, 'Analysis error');
             end
         end
@@ -661,6 +716,7 @@ classdef CrystalVibrationApp < handle
                 app.RelaxStatusLabel.Text = 'Relax to solve for true equilibrium of interior atoms.';
                 app.RelaxStatusLabel.FontColor = [0.4 0.4 0.4];
                 app.shearViewDirty = true;
+                app.resetAnalysisTabs();
                 if app.TabGroup.SelectedTab == app.ShearTab
                     app.refreshShearViewIfNeeded();
                 end
