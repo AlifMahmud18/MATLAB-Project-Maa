@@ -1,14 +1,23 @@
 classdef CrystalVibrationApp < handle
-    %CRYSTALVIBRATIONAPP GUI: load a CIF/txt crystal, build the spring network, solve the modes and animate them.
+    %CRYSTALVIBRATIONAPP Single-window GUI: load a CIF/txt crystal, build the spring network, solve the modes and animate them.
+    %   The whole interface lives in one uifigure - a control column on the left and a tab group on the right.
+    %   Every component is placed by uigridlayout, so nothing overlaps at any window size.
     %   Build & Solve: autoRigidShells/generateLatticeGeneral -> buildDynamicalMatrix -> jacobiEigenSolver.
-    %   Views window: 3D lattice (hover an atom for its element, via atomHover + getElementDetails) and frequency spectrum.
-    %   Shear Analysis window: slider (applyShearForce), Relax button (relaxShearLattice),
-    %   and the V7 buttons that run phononShearSuite and open plotShearSoftening / plotShearBonds figures.
+    %   "Lattice & Modes" tab: the 3D lattice (hover an atom for its element, via atomHover + getElementDetails)
+    %   and the frequency spectrum, both visible at the same time.
+    %   "Shear Analysis" tab: shear slider (applyShearForce), Relax button (relaxShearLattice), the pristine and
+    %   sheared lattices with their normal-mode spectra, and the V7 buttons that run phononShearSuite and draw
+    %   plotShearSoftening / plotShearBonds / brillouinShearSurface.
 
     properties (Access = private)
         UIFigure
-        LoadFileButton
+        TabGroup
+        LatticeTab
+        ShearTab
         StatusLabel
+
+        % Left control column
+        LoadFileButton
         NEditField
         kEditField
         cutoffDropDown
@@ -16,24 +25,15 @@ classdef CrystalVibrationApp < handle
         ModeDropDown
         AmplitudeSlider
         SpeedSlider
-        PlayButton
-        PauseButton
+        PlayPauseButton
         StopButton
-        LaunchShearButton
 
-        PlotFig
-        Panel3D
-        PanelSpec
+        % "Lattice & Modes" tab
         PlotAx
         SpecAx
-        View3DButton
-        ViewSpecButton
         SpecHighlightHandle
 
-        ShearFig
-        ShearGrid
-        ShearControlPanel
-        ShearLabel
+        % "Shear Analysis" tab
         ShearSlider
         RelaxButton
         RelaxStatusLabel
@@ -64,6 +64,7 @@ classdef CrystalVibrationApp < handle
         V
         omega
         isBuilt = false
+        shearViewDirty = true
         BaseStiffnessMatrix
         BaseSpringConstant
 
@@ -86,13 +87,7 @@ classdef CrystalVibrationApp < handle
 
         function delete(app)
             app.stopTimerIfRunning();
-            if ~isempty(app.PlotFig) && isvalid(app.PlotFig)
-                delete(app.PlotFig);
-            end
-            if ~isempty(app.ShearFig) && isvalid(app.ShearFig)
-                delete(app.ShearFig);
-            end
-            if isvalid(app.UIFigure)
+            if ~isempty(app.UIFigure) && isvalid(app.UIFigure)
                 delete(app.UIFigure);
             end
         end
@@ -101,206 +96,285 @@ classdef CrystalVibrationApp < handle
     methods (Access = private)
 
         function createComponents(app)
-            app.UIFigure = uifigure('Name', 'Crystal Vibration Explorer - Controls', ...
-                'Position', [100 100 320 650], 'Color', 'w');
+            app.UIFigure = uifigure('Name', 'Crystal Vibration Explorer', ...
+                'Position', [60 60 1500 880], 'Color', 'w');
             app.UIFigure.CloseRequestFcn = @(~, ~) app.onClose();
 
-            uilabel(app.UIFigure, 'Text', 'Crystal Vibration Explorer', ...
-                'FontSize', 16, 'FontWeight', 'bold', 'Position', [20 610 280 25]);
+            mainGrid = uigridlayout(app.UIFigure, [2 2]);
+            mainGrid.ColumnWidth = {340, '1x'};
+            mainGrid.RowHeight = {'1x', 24};
+            mainGrid.RowSpacing = 6;
+            mainGrid.ColumnSpacing = 8;
 
-            app.LoadFileButton = uibutton(app.UIFigure, 'push', ...
-                'Text', 'Load Crystal File...', 'Position', [20 575 260 30], ...
-                'ButtonPushedFcn', @(~, ~) app.LoadFileButtonPushed());
+            controlPanel = uipanel(mainGrid, 'Title', 'Model & Animation', ...
+                'BackgroundColor', 'w');
+            controlPanel.Layout.Row = 1;
+            controlPanel.Layout.Column = 1;
+            app.buildControlColumn(controlPanel);
 
-            app.StatusLabel = uilabel(app.UIFigure, 'Text', 'No file loaded (using default bcc structure)', ...
-                'Position', [20 550 280 20], 'FontColor', [0.4 0.4 0.4]);
+            app.TabGroup = uitabgroup(mainGrid);
+            app.TabGroup.Layout.Row = 1;
+            app.TabGroup.Layout.Column = 2;
+            app.TabGroup.SelectionChangedFcn = @(~, event) app.TabSelectionChanged(event);
 
-            uilabel(app.UIFigure, 'Text', 'Supercell size (fixed): 1 x 1 x 1 cell', 'Position', [20 515 260 20]);
-            app.NEditField = uieditfield(app.UIFigure, 'numeric', ...
-                'Value', 1, 'Limits', [1 1], 'Editable', 'off', 'Position', [20 490 260 25]);
+            app.LatticeTab = uitab(app.TabGroup, 'Title', 'Lattice & Modes');
+            app.buildLatticeTab(app.LatticeTab);
 
-            uilabel(app.UIFigure, 'Text', 'Spring constant k:', 'Position', [20 460 260 20]);
-            % Spring constant k is a reduced-unit default (1.0): use a force constant fitted to the real material.
-            app.kEditField = uieditfield(app.UIFigure, 'numeric', ...
-                'Value', 1.0, 'Limits', [0.001 Inf], 'Position', [20 435 260 25]);
+            app.ShearTab = uitab(app.TabGroup, 'Title', 'Shear Analysis');
+            app.buildShearTab(app.ShearTab);
 
-            uilabel(app.UIFigure, 'Text', 'Bond network:', 'Position', [20 400 260 20]);
-            app.cutoffDropDown = uidropdown(app.UIFigure, ...
-                'Items', {'Nearest neighbors only', '1st + 2nd neighbors (fixed)', 'Auto (grows shells until rigid)'}, ...
-                'Value', 'Auto (grows shells until rigid)', ...
-                'Position', [20 375 260 25]);
+            app.StatusLabel = uilabel(mainGrid, ...
+                'Text', 'No file loaded (using default bcc structure).', ...
+                'FontColor', [0.4 0.4 0.4]);
+            app.StatusLabel.Layout.Row = 2;
+            app.StatusLabel.Layout.Column = [1 2];
 
-            app.BuildButton = uibutton(app.UIFigure, 'push', ...
-                'Text', 'Build && Solve', 'Position', [20 330 260 35], ...
-                'FontWeight', 'bold', 'BackgroundColor', [0.20 0.45 0.80], 'FontColor', 'w', ...
-                'ButtonPushedFcn', @(~, ~) app.BuildButtonPushed());
-
-            uilabel(app.UIFigure, 'Text', 'Vibrational mode:', 'Position', [20 295 260 20]);
-            app.ModeDropDown = uidropdown(app.UIFigure, ...
-                'Items', {'(build the model first)'}, 'Enable', 'off', ...
-                'Position', [20 270 260 25], ...
-                'ValueChangedFcn', @(~, ~) app.ModeDropDownValueChanged());
-
-            uilabel(app.UIFigure, 'Text', 'Amplitude:', 'Position', [20 235 260 20]);
-            app.AmplitudeSlider = uislider(app.UIFigure, ...
-                'Limits', [0 1], 'Value', 0.25, 'Position', [25 220 250 3]);
-
-            uilabel(app.UIFigure, 'Text', 'Playback speed (cycles/sec):', 'Position', [20 175 260 20]);
-            app.SpeedSlider = uislider(app.UIFigure, ...
-                'Limits', [0.1 10], 'Value', 2, 'Position', [25 160 250 3], ...
-                'ValueChangedFcn', @(~, ~) app.SpeedSliderValueChanged());
-
-            app.PlayButton = uibutton(app.UIFigure, 'push', 'Text', 'Play', ...
-                'Position', [20 105 80 32], 'Enable', 'off', ...
-                'BackgroundColor', [0.30 0.70 0.35], 'FontColor', 'w', ...
-                'ButtonPushedFcn', @(~, ~) app.PlayButtonPushed());
-            app.PauseButton = uibutton(app.UIFigure, 'push', 'Text', 'Pause', ...
-                'Position', [110 105 80 32], 'Enable', 'off', ...
-                'ButtonPushedFcn', @(~, ~) app.PauseButtonPushed());
-            app.StopButton = uibutton(app.UIFigure, 'push', 'Text', 'Stop', ...
-                'Position', [200 105 80 32], 'Enable', 'off', ...
-                'ButtonPushedFcn', @(~, ~) app.StopButtonPushed());
-
-            app.LaunchShearButton = uibutton(app.UIFigure, 'push', ...
-                'Text', 'Open Shear Analysis...', 'Position', [20 55 260 35], ...
-                'Enable', 'off', 'FontWeight', 'bold', 'BackgroundColor', [0.8 0.4 0.2], 'FontColor', 'w', ...
-                'ButtonPushedFcn', @(~, ~) app.ensureShearFigure());
-
-            uilabel(app.UIFigure, 'Text', 'The 3D view and spectrum open in a separate window.', ...
-                'Position', [20 15 280 30], 'FontColor', [0.4 0.4 0.4]);
-
-            app.ensurePlotFigure();
+            app.setShearControlsEnabled(false);
         end
 
-        function ensurePlotFigure(app)
-            if ~isempty(app.PlotFig) && isvalid(app.PlotFig)
-                return;
-            end
+        function buildControlColumn(app, parent)
+            g = uigridlayout(parent, [18 1]);
+            g.ColumnWidth = {'1x'};
+            g.RowHeight = {24, 32, 22, 24, 22, 24, 22, 24, 38, 26, 22, 24, 22, 50, 22, 50, 34, '1x'};
+            g.RowSpacing = 6;
+            g.Padding = [10 10 10 10];
+            g.Scrollable = 'on';
 
-            app.PlotFig = figure('Name', 'Crystal Vibration Explorer - Views', ...
-                'NumberTitle', 'off', 'Position', [440 80 680 700], 'Color', 'w');
+            lbl = uilabel(g, 'Text', 'Crystal & bond network', 'FontWeight', 'bold');
+            lbl.Layout.Row = 1;
 
-            app.View3DButton = uicontrol(app.PlotFig, 'Style', 'pushbutton', ...
-                'String', '3D View', 'Position', [10 654 200 34], ...
-                'FontWeight', 'bold', 'Callback', @(~, ~) app.switchToView('3D'));
-            app.ViewSpecButton = uicontrol(app.PlotFig, 'Style', 'pushbutton', ...
-                'String', 'Frequency Spectrum', 'Position', [220 654 200 34], ...
-                'FontWeight', 'bold', 'Callback', @(~, ~) app.switchToView('Spec'));
+            app.LoadFileButton = uibutton(g, 'push', 'Text', 'Load Crystal File...', ...
+                'ButtonPushedFcn', @(~, ~) app.LoadFileButtonPushed());
+            app.LoadFileButton.Layout.Row = 2;
 
-            app.Panel3D = uipanel(app.PlotFig, 'Units', 'pixels', ...
-                'Position', [10 10 660 630], 'BorderType', 'none', 'BackgroundColor', 'w');
-            app.PlotAx = axes('Parent', app.Panel3D);
+            lbl = uilabel(g, 'Text', 'Supercell size (fixed): 1 x 1 x 1 cell');
+            lbl.Layout.Row = 3;
+            app.NEditField = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 1], 'Editable', 'off');
+            app.NEditField.Layout.Row = 4;
+
+            lbl = uilabel(g, 'Text', 'Spring constant k:');
+            lbl.Layout.Row = 5;
+            % Spring constant k is a reduced-unit default (1.0): use a force constant fitted to the real material.
+            app.kEditField = uieditfield(g, 'numeric', 'Value', 1.0, 'Limits', [0.001 Inf]);
+            app.kEditField.Layout.Row = 6;
+
+            lbl = uilabel(g, 'Text', 'Bond network:');
+            lbl.Layout.Row = 7;
+            app.cutoffDropDown = uidropdown(g, ...
+                'Items', {'Nearest neighbors only', '1st + 2nd neighbors (fixed)', 'Auto (grows shells until rigid)'}, ...
+                'Value', 'Auto (grows shells until rigid)');
+            app.cutoffDropDown.Layout.Row = 8;
+
+            app.BuildButton = uibutton(g, 'push', 'Text', 'Build && Solve', ...
+                'FontWeight', 'bold', 'BackgroundColor', [0.20 0.45 0.80], 'FontColor', 'w', ...
+                'ButtonPushedFcn', @(~, ~) app.BuildButtonPushed());
+            app.BuildButton.Layout.Row = 9;
+
+            lbl = uilabel(g, 'Text', 'Mode animation', 'FontWeight', 'bold');
+            lbl.Layout.Row = 10;
+
+            lbl = uilabel(g, 'Text', 'Vibrational mode:');
+            lbl.Layout.Row = 11;
+            app.ModeDropDown = uidropdown(g, 'Items', {'(build the model first)'}, 'Enable', 'off', ...
+                'ValueChangedFcn', @(~, ~) app.ModeDropDownValueChanged());
+            app.ModeDropDown.Layout.Row = 12;
+
+            lbl = uilabel(g, 'Text', 'Amplitude:');
+            lbl.Layout.Row = 13;
+            app.AmplitudeSlider = uislider(g, 'Limits', [0 1], 'Value', 0.25);
+            app.AmplitudeSlider.Layout.Row = 14;
+
+            lbl = uilabel(g, 'Text', 'Playback speed (cycles/sec):');
+            lbl.Layout.Row = 15;
+            app.SpeedSlider = uislider(g, 'Limits', [0.1 10], 'Value', 2);
+            app.SpeedSlider.Layout.Row = 16;
+
+            transport = uigridlayout(g, [1 2]);
+            transport.Layout.Row = 17;
+            transport.ColumnWidth = {'1x', '1x'};
+            transport.ColumnSpacing = 8;
+            transport.Padding = [0 0 0 0];
+
+            app.PlayPauseButton = uibutton(transport, 'push', 'Text', 'Play', 'Enable', 'off', ...
+                'BackgroundColor', [0.30 0.70 0.35], 'FontColor', 'w', ...
+                'ButtonPushedFcn', @(~, ~) app.PlayPauseButtonPushed());
+            app.PlayPauseButton.Layout.Column = 1;
+
+            app.StopButton = uibutton(transport, 'push', 'Text', 'Stop', 'Enable', 'off', ...
+                'ButtonPushedFcn', @(~, ~) app.StopButtonPushed());
+            app.StopButton.Layout.Column = 2;
+        end
+
+        function buildLatticeTab(app, parent)
+            g = uigridlayout(parent, [1 2]);
+            g.ColumnWidth = {'5x', '4x'};
+            g.RowHeight = {'1x'};
+            g.Padding = [8 8 8 8];
+            g.ColumnSpacing = 8;
+
+            app.PlotAx = uiaxes(g);
+            app.PlotAx.Layout.Row = 1;
+            app.PlotAx.Layout.Column = 1;
             title(app.PlotAx, 'Load a crystal or click "Build & Solve" to begin');
-            axis(app.PlotAx, 'equal');
+            app.PlotAx.DataAspectRatio = [1 1 1];
             grid(app.PlotAx, 'on');
             view(app.PlotAx, 3);
 
-            app.PanelSpec = uipanel(app.PlotFig, 'Units', 'pixels', ...
-                'Position', [10 10 660 630], 'BorderType', 'none', 'BackgroundColor', 'w');
-            app.SpecAx = axes('Parent', app.PanelSpec);
+            app.SpecAx = uiaxes(g);
+            app.SpecAx.Layout.Row = 1;
+            app.SpecAx.Layout.Column = 2;
             title(app.SpecAx, 'Click "Build & Solve" to compute the spectrum');
             xlabel(app.SpecAx, 'Mode index');
             ylabel(app.SpecAx, '\omega (angular frequency)');
             grid(app.SpecAx, 'on');
-
-            app.switchToView('3D');
         end
 
-        function ensureShearFigure(app)
+        function buildShearTab(app, parent)
+            g = uigridlayout(parent, [2 3]);
+            g.ColumnWidth = {340, '1x', '1x'};
+            g.RowHeight = {'1x', '1x'};
+            g.Padding = [8 8 8 8];
+            g.RowSpacing = 8;
+            g.ColumnSpacing = 8;
+
+            panel = uipanel(g, 'Title', 'Shear Control Panel', 'BackgroundColor', 'w');
+            panel.Layout.Row = [1 2];
+            panel.Layout.Column = 1;
+            app.buildShearControls(panel);
+
+            app.UIAxes3D_NoForce = uiaxes(g);
+            app.UIAxes3D_NoForce.Layout.Row = 1;
+            app.UIAxes3D_NoForce.Layout.Column = 2;
+            title(app.UIAxes3D_NoForce, 'Pristine Lattice (No Force)');
+
+            app.UIAxes3D_WithForce = uiaxes(g);
+            app.UIAxes3D_WithForce.Layout.Row = 1;
+            app.UIAxes3D_WithForce.Layout.Column = 3;
+            title(app.UIAxes3D_WithForce, 'Shear-Deformed Lattice (Force Distributed)');
+
+            app.UIAxesMode_NoForce = uiaxes(g);
+            app.UIAxesMode_NoForce.Layout.Row = 2;
+            app.UIAxesMode_NoForce.Layout.Column = 2;
+            title(app.UIAxesMode_NoForce, 'Normal Modes - Pristine');
+            xlabel(app.UIAxesMode_NoForce, 'Mode Index');
+            ylabel(app.UIAxesMode_NoForce, '\omega (angular frequency)');
+
+            app.UIAxesMode_WithForce = uiaxes(g);
+            app.UIAxesMode_WithForce.Layout.Row = 2;
+            app.UIAxesMode_WithForce.Layout.Column = 3;
+            title(app.UIAxesMode_WithForce, 'Normal Modes - Sheared');
+            xlabel(app.UIAxesMode_WithForce, 'Mode Index');
+            ylabel(app.UIAxesMode_WithForce, '\omega (angular frequency)');
+        end
+
+        function buildShearControls(app, parent)
+            g = uigridlayout(parent, [12 1]);
+            g.ColumnWidth = {'1x'};
+            g.RowHeight = {22, 50, 34, 44, 26, 28, 34, 34, 34, 34, 76, '1x'};
+            g.RowSpacing = 6;
+            g.Padding = [10 10 10 10];
+            g.Scrollable = 'on';
+
+            lbl = uilabel(g, 'Text', 'Engineering Shear Strain (gamma):');
+            lbl.Layout.Row = 1;
+
+            app.ShearSlider = uislider(g, 'Limits', [0 0.5], 'Value', 0, ...
+                'ValueChangedFcn', @(~, event) app.updateShearAnalysis(event.Value));
+            app.ShearSlider.Layout.Row = 2;
+
+            app.RelaxButton = uibutton(g, 'push', 'Text', 'Relax (Gauss-Jordan, Exp.5)', ...
+                'FontWeight', 'bold', 'BackgroundColor', [0.20 0.45 0.80], 'FontColor', 'w', ...
+                'ButtonPushedFcn', @(~, ~) app.RelaxButtonPushed());
+            app.RelaxButton.Layout.Row = 3;
+
+            app.RelaxStatusLabel = uilabel(g, ...
+                'Text', 'Relax to solve for true equilibrium of interior atoms.', ...
+                'FontColor', [0.4 0.4 0.4], 'WordWrap', 'on', 'VerticalAlignment', 'top');
+            app.RelaxStatusLabel.Layout.Row = 4;
+
+            hdr = uilabel(g, 'Text', 'Phonon softening & bond breaking (V7)', 'FontWeight', 'bold');
+            hdr.Layout.Row = 5;
+            hdr.Tooltip = 'Sweeps shear strain on the current lattice with three bond models (harmonic, +pre-stress, Morse with bond rupture).';
+
+            gammaRow = uigridlayout(g, [1 2]);
+            gammaRow.Layout.Row = 6;
+            gammaRow.ColumnWidth = {'1x', 110};
+            gammaRow.ColumnSpacing = 6;
+            gammaRow.Padding = [0 0 0 0];
+            lbl = uilabel(gammaRow, 'Text', 'Max shear strain gamma_max:');
+            lbl.Layout.Column = 1;
+            app.GammaMaxEdit = uieditfield(gammaRow, 'numeric', 'Limits', [0.05 1.5], 'Value', 0.5);
+            app.GammaMaxEdit.Layout.Column = 2;
+
+            app.PhononPlotsButton = uibutton(g, 'push', 'Text', 'Phonon Softening Plots (6 figures)', ...
+                'FontWeight', 'bold', 'BackgroundColor', [0.47 0.67 0.19], 'FontColor', 'w', ...
+                'ButtonPushedFcn', @(~, ~) app.runAnalysisPlots('phonon'));
+            app.PhononPlotsButton.Layout.Row = 7;
+
+            app.BondPlotsButton = uibutton(g, 'push', 'Text', 'Bond-Breaking Plots (2 figures)', ...
+                'FontWeight', 'bold', 'BackgroundColor', [0.85 0.33 0.10], 'FontColor', 'w', ...
+                'ButtonPushedFcn', @(~, ~) app.runAnalysisPlots('bond'));
+            app.BondPlotsButton.Layout.Row = 8;
+
+            app.DispersionButton = uibutton(g, 'push', 'Text', '3D Dispersion Surface (Brillouin zone)', ...
+                'FontWeight', 'bold', 'BackgroundColor', [0.20 0.45 0.80], 'FontColor', 'w', ...
+                'ButtonPushedFcn', @(~, ~) app.openDispersionSurface());
+            app.DispersionButton.Layout.Row = 9;
+
+            alphaRow = uigridlayout(g, [1 2]);
+            alphaRow.Layout.Row = 10;
+            alphaRow.ColumnWidth = {'1x', 80};
+            alphaRow.ColumnSpacing = 6;
+            alphaRow.Padding = [0 0 0 0];
+            app.AlphaLabel = uilabel(alphaRow, 'Text', 'Morse alpha (critical stretch 17.3%):', 'WordWrap', 'on');
+            app.AlphaLabel.Layout.Column = 1;
+            app.AlphaEdit = uieditfield(alphaRow, 'numeric', 'Limits', [1 20], 'Value', 4, ...
+                'Tooltip', 'ASSUMED default 4. Calibrate to the real material: critical stretch = ln2/alpha (ideal tensile strain).', ...
+                'ValueChangedFcn', @(s, ~) set(app.AlphaLabel, 'Text', sprintf('Morse alpha (critical stretch %.1f%%):', 100 * log(2) / s.Value)));
+            app.AlphaEdit.Layout.Column = 2;
+
+            app.AnalysisStatusLabel = uilabel(g, ...
+                'Text', ['Uses the lattice you built. The four axes on the right update live; the P1-P6 / Q1-Q2 ' ...
+                         'sweep plots and the dispersion surface are drawn by the standalone plotting functions.'], ...
+                'WordWrap', 'on', 'VerticalAlignment', 'top', 'FontColor', [0.4 0.4 0.4]);
+            app.AnalysisStatusLabel.Layout.Row = 11;
+        end
+
+        function setShearControlsEnabled(app, tf)
+            if tf
+                state = 'on';
+            else
+                state = 'off';
+            end
+            ctrls = {app.ShearSlider, app.RelaxButton, app.GammaMaxEdit, app.AlphaEdit, ...
+                     app.PhononPlotsButton, app.BondPlotsButton, app.DispersionButton};
+            for c = 1:numel(ctrls)
+                if ~isempty(ctrls{c}) && isvalid(ctrls{c})
+                    ctrls{c}.Enable = state;
+                end
+            end
+        end
+
+        function TabSelectionChanged(app, event)
+            if event.NewValue ~= app.ShearTab
+                return;
+            end
             if ~app.isBuilt
+                app.TabGroup.SelectedTab = app.LatticeTab;
                 app.showAlert('Please Build & Solve the lattice before running shear analysis.', 'Not Built');
                 return;
             end
+            app.refreshShearViewIfNeeded();
+        end
 
-            if ~isempty(app.ShearFig) && isvalid(app.ShearFig)
-                figure(app.ShearFig);
+        function refreshShearViewIfNeeded(app)
+            % The four shear axes are only redrawn when the tab is actually looked at,
+            % so Build & Solve stays as fast as it was when this lived in its own window.
+            if ~app.shearViewDirty
                 return;
             end
-
-            app.ShearFig = uifigure('Name', 'Crystal Vibration Explorer - Shear Analysis');
-            app.ShearFig.Position = [100 100 1400 850];
-
-            app.ShearGrid = uigridlayout(app.ShearFig);
-            app.ShearGrid.ColumnWidth = {350, '1x', '1x'};
-            app.ShearGrid.RowHeight = {'1x', '1x'};
-
-            app.ShearControlPanel = uipanel(app.ShearGrid);
-            app.ShearControlPanel.Title = 'Shear Control Panel';
-            app.ShearControlPanel.Layout.Row = [1 2];
-            app.ShearControlPanel.Layout.Column = 1;
-
-            app.ShearLabel = uilabel(app.ShearControlPanel);
-            app.ShearLabel.Position = [20 750 220 22];
-            app.ShearLabel.Text = 'Engineering Shear Strain (gamma):';
-
-            app.ShearSlider = uislider(app.ShearControlPanel);
-            app.ShearSlider.Limits = [0 0.5];
-            app.ShearSlider.Position = [20 720 300 3];
-            app.ShearSlider.ValueChangedFcn = @(src, event) app.updateShearAnalysis(event);
-
-            app.RelaxButton = uibutton(app.ShearControlPanel, 'push', ...
-                'Text', 'Relax (Gauss-Jordan, Exp.5)', 'Position', [20 670 300 32], ...
-                'FontWeight', 'bold', 'BackgroundColor', [0.20 0.45 0.80], 'FontColor', 'w', ...
-                'ButtonPushedFcn', @(~, ~) app.RelaxButtonPushed());
-
-            app.RelaxStatusLabel = uilabel(app.ShearControlPanel);
-            app.RelaxStatusLabel.Position = [20 630 310 34];
-            app.RelaxStatusLabel.Text = 'Relax to solve for true equilibrium of interior atoms.';
-            app.RelaxStatusLabel.FontColor = [0.4 0.4 0.4];
-            app.RelaxStatusLabel.WordWrap = 'on';
-
-            hdr = uilabel(app.ShearControlPanel, 'Text', 'Phonon softening & bond breaking (V7)', ...
-                'Position', [20 590 310 22], 'FontWeight', 'bold');
-            uilabel(app.ShearControlPanel, 'Text', 'Max shear strain \gamma_{max}:', ...
-                'Position', [20 558 170 22], 'Interpreter', 'tex');
-            app.GammaMaxEdit = uieditfield(app.ShearControlPanel, 'numeric', ...
-                'Limits', [0.05 1.5], 'Value', 0.5, 'Position', [200 558 120 22]);
-            app.PhononPlotsButton = uibutton(app.ShearControlPanel, 'push', ...
-                'Text', 'Phonon Softening Plots (6 figures)', 'Position', [20 510 300 34], ...
-                'FontWeight', 'bold', 'BackgroundColor', [0.47 0.67 0.19], 'FontColor', 'w', ...
-                'ButtonPushedFcn', @(~, ~) app.runAnalysisPlots('phonon'));
-            app.BondPlotsButton = uibutton(app.ShearControlPanel, 'push', ...
-                'Text', 'Bond-Breaking Plots (2 figures)', 'Position', [20 466 300 34], ...
-                'FontWeight', 'bold', 'BackgroundColor', [0.85 0.33 0.10], 'FontColor', 'w', ...
-                'ButtonPushedFcn', @(~, ~) app.runAnalysisPlots('bond'));
-            app.DispersionButton = uibutton(app.ShearControlPanel, 'push', ...
-                'Text', '3D Dispersion Surface (Brillouin zone)', 'Position', [20 422 300 34], ...
-                'FontWeight', 'bold', 'BackgroundColor', [0.20 0.45 0.80], 'FontColor', 'w', ...
-                'ButtonPushedFcn', @(~, ~) app.openDispersionSurface());
-            app.AlphaLabel = uilabel(app.ShearControlPanel, 'Text', 'Morse alpha (critical stretch 17.3%):', 'Position', [20 388 215 22]);
-            app.AlphaEdit = uieditfield(app.ShearControlPanel, 'numeric', 'Limits', [1 20], 'Value', 4, 'Position', [240 388 80 22], ...
-                'Tooltip', 'ASSUMED default 4. Calibrate to the real material: critical stretch = ln2/alpha (ideal tensile strain).', ...
-                'ValueChangedFcn', @(s, ~) set(app.AlphaLabel, 'Text', sprintf('Morse alpha (critical stretch %.1f%%):', 100 * log(2) / s.Value)));
-            app.AnalysisStatusLabel = uilabel(app.ShearControlPanel, ...
-                'Text', 'Uses the lattice you built. Plots open in separate figure windows.', ...
-                'Position', [20 300 310 80], 'WordWrap', 'on', 'FontColor', [0.4 0.4 0.4]);
-            hdr.Tooltip = 'Sweeps shear strain on the current lattice with three bond models (harmonic, +pre-stress, Morse with bond rupture).';
-
-            app.UIAxes3D_NoForce = uiaxes(app.ShearGrid);
-            title(app.UIAxes3D_NoForce, 'Pristine Lattice (No Force)')
-            app.UIAxes3D_NoForce.Layout.Row = 1;
-            app.UIAxes3D_NoForce.Layout.Column = 2;
-
-            app.UIAxes3D_WithForce = uiaxes(app.ShearGrid);
-            title(app.UIAxes3D_WithForce, 'Shear-Deformed Lattice (Force Distributed)')
-            app.UIAxes3D_WithForce.Layout.Row = 1;
-            app.UIAxes3D_WithForce.Layout.Column = 3;
-
-            app.UIAxesMode_NoForce = uiaxes(app.ShearGrid);
-            title(app.UIAxesMode_NoForce, 'Normal Modes - Pristine')
-            xlabel(app.UIAxesMode_NoForce, 'Mode Index')
-            ylabel(app.UIAxesMode_NoForce, '\omega (angular frequency)')
-            app.UIAxesMode_NoForce.Layout.Row = 2;
-            app.UIAxesMode_NoForce.Layout.Column = 2;
-
-            app.UIAxesMode_WithForce = uiaxes(app.ShearGrid);
-            title(app.UIAxesMode_WithForce, 'Normal Modes - Sheared')
-            xlabel(app.UIAxesMode_WithForce, 'Mode Index')
-            ylabel(app.UIAxesMode_WithForce, '\omega (angular frequency)')
-            app.UIAxesMode_WithForce.Layout.Row = 2;
-            app.UIAxesMode_WithForce.Layout.Column = 3;
-
-            app.updateShearAnalysis(struct('Value', 0));
+            app.shearViewDirty = false;
+            app.updateShearAnalysis(app.ShearSlider.Value);
         end
 
         function openDispersionSurface(app)
@@ -322,7 +396,7 @@ classdef CrystalVibrationApp < handle
                 app.showAlert('Please Build & Solve the lattice first.', 'Not Built');
                 return;
             end
-            dlg = uiprogressdlg(app.ShearFig, 'Title', 'Shear analysis', ...
+            dlg = uiprogressdlg(app.UIFigure, 'Title', 'Shear analysis', ...
                 'Message', 'Sweeping shear strain...', 'Indeterminate', 'on');
             cleanup = onCleanup(@() close(dlg));
             try
@@ -341,11 +415,11 @@ classdef CrystalVibrationApp < handle
                 if strcmp(kind, 'phonon')
                     dlg.Message = 'Drawing phonon-softening plots...';
                     plotShearSoftening(c);
-                    msg = 'Phonon softening figures P1-P6 opened.';
+                    msg = 'Phonon softening figures P1-P6 drawn.';
                 else
                     dlg.Message = 'Drawing bond-breaking plots...';
                     plotShearBonds(c);
-                    msg = 'Bond-breaking figures Q1-Q2 opened.';
+                    msg = 'Bond-breaking figures Q1-Q2 drawn.';
                 end
                 R = c.cases{c.main};
                 gb = min(R.gammaFirstBreak);
@@ -356,9 +430,8 @@ classdef CrystalVibrationApp < handle
                 app.showAlert(ME.message, 'Analysis error');
             end
         end
-        function updateShearAnalysis(app, event)
-            shearVal = event.Value;
 
+        function updateShearAnalysis(app, shearVal)
             if isempty(app.pos) || isempty(app.BaseStiffnessMatrix)
                 return;
             end
@@ -370,15 +443,20 @@ classdef CrystalVibrationApp < handle
             [coords_sh, force_dist, ~, freqs_sh, ~] = applyShearForce(app.pos, app.bonds, app.masses, app.BaseStiffnessMatrix, k, shearVal);
 
             cla(app.UIAxes3D_NoForce);
+            title(app.UIAxes3D_NoForce, 'Pristine Lattice (No Force)');
             plotLattice(app.pos, app.bonds, app.UIAxes3D_NoForce);
             atomHover(app.UIAxes3D_NoForce, makeHoverLabels(elementNames, app.masses), @() app.pos);
 
             cla(app.UIAxes3D_WithForce);
+            title(app.UIAxes3D_WithForce, 'Shear-Deformed Lattice (Force Distributed)');
             plotLatticeWithGradient(app.UIAxes3D_WithForce, coords_sh, elementNames, force_dist, app.bonds, 'Bond-force load (1 = load at gamma = 0.5)');
             atomHover(app.UIAxes3D_WithForce, makeHoverLabels(elementNames, app.masses), @() coords_sh);
 
             cla(app.UIAxesMode_NoForce);
             plot(app.UIAxesMode_NoForce, freqs_base, '-o', 'LineWidth', 1.5, 'Color', 'b');
+            title(app.UIAxesMode_NoForce, 'Normal Modes - Pristine');
+            xlabel(app.UIAxesMode_NoForce, 'Mode Index');
+            ylabel(app.UIAxesMode_NoForce, '\omega (angular frequency)');
 
             yyaxis(app.UIAxesMode_WithForce, 'left');  cla(app.UIAxesMode_WithForce);
             yyaxis(app.UIAxesMode_WithForce, 'right');  cla(app.UIAxesMode_WithForce);
@@ -388,6 +466,7 @@ classdef CrystalVibrationApp < handle
             hPristine = plot(app.UIAxesMode_WithForce, freqs_base, '--', 'LineWidth', 1, 'Color', [0.6 0.6 0.6]);
             hSheared = plot(app.UIAxesMode_WithForce, freqs_sh, '-o', 'LineWidth', 1.5, 'Color', 'r');
             hold(app.UIAxesMode_WithForce, 'off');
+            xlabel(app.UIAxesMode_WithForce, 'Mode Index');
             ylabel(app.UIAxesMode_WithForce, '\omega (angular frequency)');
 
             yyaxis(app.UIAxesMode_WithForce, 'right');
@@ -408,6 +487,8 @@ classdef CrystalVibrationApp < handle
                 highPct = 100 * (freqs_sh(end) - freqs_base(end)) / freqs_base(end);
                 title(app.UIAxesMode_WithForce, sprintf('Normal Modes - Sheared (lowest mode %+.1f%%, highest mode %+.1f%%)', ...
                     lowPct, highPct));
+            else
+                title(app.UIAxesMode_WithForce, 'Normal Modes - Sheared');
             end
         end
 
@@ -470,6 +551,7 @@ classdef CrystalVibrationApp < handle
             hPristine = plot(app.UIAxesMode_WithForce, app.omega, '--', 'LineWidth', 1, 'Color', [0.6 0.6 0.6]);
             hRelaxed = plot(app.UIAxesMode_WithForce, freqs_relaxed, '-o', 'LineWidth', 1.5, 'Color', [0.49 0.18 0.56]);
             hold(app.UIAxesMode_WithForce, 'off');
+            xlabel(app.UIAxesMode_WithForce, 'Mode Index');
             ylabel(app.UIAxesMode_WithForce, '\omega (angular frequency)');
 
             yyaxis(app.UIAxesMode_WithForce, 'right');
@@ -500,38 +582,6 @@ classdef CrystalVibrationApp < handle
             app.RelaxStatusLabel.FontColor = [0.1 0.5 0.1];
         end
 
-        function switchToView(app, which)
-            app.ensurePlotFigure();
-            is3D = strcmp(which, '3D');
-
-            if is3D
-                app.Panel3D.Visible = 'on';
-                app.PanelSpec.Visible = 'off';
-            else
-                app.Panel3D.Visible = 'off';
-                app.PanelSpec.Visible = 'on';
-            end
-
-            activeColor = [0.20 0.45 0.80];
-            activeFont = 'w';
-            inactiveColor = [0.94 0.94 0.94];
-            inactiveFont = 'k';
-
-            if is3D
-                app.View3DButton.BackgroundColor = activeColor;
-                app.View3DButton.ForegroundColor = activeFont;
-                app.ViewSpecButton.BackgroundColor = inactiveColor;
-                app.ViewSpecButton.ForegroundColor = inactiveFont;
-            else
-                app.View3DButton.BackgroundColor = inactiveColor;
-                app.View3DButton.ForegroundColor = inactiveFont;
-                app.ViewSpecButton.BackgroundColor = activeColor;
-                app.ViewSpecButton.ForegroundColor = activeFont;
-            end
-
-            figure(app.PlotFig);
-        end
-
         function LoadFileButtonPushed(app)
             [file, path] = uigetfile( ...
                 {'*.txt;*.dat;*.cif', 'Crystal files (*.txt, *.dat, *.cif)'; ...
@@ -550,9 +600,8 @@ classdef CrystalVibrationApp < handle
                     [app.latticeVectors, app.basisFrac, app.basisMasses] = parseCrystalFile(fullPath);
                 end
                 app.useCustomFile = true;
-                app.StatusLabel.Text = sprintf('Loaded: %s (%d atoms/cell)', ...
-                    file, size(app.basisFrac, 1));
-                app.StatusLabel.FontColor = [0.1 0.5 0.1];
+                app.setStatus(sprintf('Loaded: %s (%d atoms/cell). Click "Build & Solve".', ...
+                    file, size(app.basisFrac, 1)), [0.1 0.5 0.1]);
             catch ME
                 app.showAlert(ME.message, 'Could not load file');
             end
@@ -607,6 +656,15 @@ classdef CrystalVibrationApp < handle
                 app.plotFrequencySpectrum();
                 app.ModeDropDownValueChanged();
 
+                app.setShearControlsEnabled(true);
+                app.ShearSlider.Value = 0;
+                app.RelaxStatusLabel.Text = 'Relax to solve for true equilibrium of interior atoms.';
+                app.RelaxStatusLabel.FontColor = [0.4 0.4 0.4];
+                app.shearViewDirty = true;
+                if app.TabGroup.SelectedTab == app.ShearTab
+                    app.refreshShearViewIfNeeded();
+                end
+
                 Natoms = size(app.pos, 1);
                 numZero = sum(eigVals < 1e-6);
                 if isempty(shellsUsed)
@@ -618,10 +676,10 @@ classdef CrystalVibrationApp < handle
                 end
 
                 app.ModeDropDown.Enable = 'on';
-                app.PlayButton.Enable = 'on';
-                app.PauseButton.Enable = 'off';
+                app.PlayPauseButton.Enable = 'on';
+                app.PlayPauseButton.Text = 'Play';
+                app.PlayPauseButton.BackgroundColor = [0.30 0.70 0.35];
                 app.StopButton.Enable = 'off';
-                app.LaunchShearButton.Enable = 'on';
             catch ME
                 app.setStatus('Build failed - see error dialog.', [0.7 0.1 0.1]);
                 app.showAlert(ME.message, 'Build error');
@@ -665,7 +723,6 @@ classdef CrystalVibrationApp < handle
         end
 
         function plotFrequencySpectrum(app)
-            app.ensurePlotFigure();
             cla(app.SpecAx);
             hold(app.SpecAx, 'on');
 
@@ -673,11 +730,14 @@ classdef CrystalVibrationApp < handle
             idxAll = 1:nModes;
             plot(app.SpecAx, idxAll, app.omega, 'o-', 'LineWidth', 1.5, 'MarkerFaceColor', [0.2 0.45 0.8]);
             hold(app.SpecAx, 'off');
+            title(app.SpecAx, 'Frequency spectrum (red marker = selected mode)');
+            xlabel(app.SpecAx, 'Mode index');
+            ylabel(app.SpecAx, '\omega (angular frequency)');
+            grid(app.SpecAx, 'on');
             app.SpecHighlightHandle = [];
         end
 
         function plotStaticLattice(app)
-            app.ensurePlotFigure();
             ax = app.PlotAx;
             cla(ax);
             hold(ax, 'on');
@@ -703,15 +763,15 @@ classdef CrystalVibrationApp < handle
             ah = app.atomHandle;
             atomHover(ax, hoverTxt, @() [ah.XData(:), ah.YData(:), ah.ZData(:)]);
 
-            axis(ax, 'equal');
+            ax.DataAspectRatio = [1 1 1];
             grid(ax, 'on');
+            xlabel(ax, 'x'); ylabel(ax, 'y'); zlabel(ax, 'z');
             view(ax, 3);
             title(ax, sprintf('%d atoms, %d bonds (hover an atom for details)', size(app.pos, 1), nBonds));
             hold(ax, 'off');
         end
 
         function highlightModeOnSpectrum(app, modeIdx)
-            app.ensurePlotFigure();
             if isempty(app.SpecHighlightHandle) || ~isvalid(app.SpecHighlightHandle)
                 hold(app.SpecAx, 'on');
                 app.SpecHighlightHandle = plot(app.SpecAx, modeIdx, app.omega(modeIdx), ...
@@ -735,14 +795,23 @@ classdef CrystalVibrationApp < handle
             app.highlightModeOnSpectrum(modeIdx);
         end
 
-        function PlayButtonPushed(app)
+        function PlayPauseButtonPushed(app)
             if ~app.isBuilt
+                return;
+            end
+
+            if ~isempty(app.animTimer) && isvalid(app.animTimer) && strcmp(app.animTimer.Running, 'on')
+                stop(app.animTimer);
+                app.PlayPauseButton.Text = 'Play';
+                app.PlayPauseButton.BackgroundColor = [0.30 0.70 0.35];
                 return;
             end
 
             if isempty(app.modeShape)
                 app.ModeDropDownValueChanged();
             end
+
+            app.TabGroup.SelectedTab = app.LatticeTab;
 
             if isempty(app.animTimer) || ~isvalid(app.animTimer)
                 app.animTimer = timer( ...
@@ -753,17 +822,9 @@ classdef CrystalVibrationApp < handle
             end
             start(app.animTimer);
 
-            app.PlayButton.Enable = 'off';
-            app.PauseButton.Enable = 'on';
+            app.PlayPauseButton.Text = 'Pause';
+            app.PlayPauseButton.BackgroundColor = [0.90 0.65 0.15];
             app.StopButton.Enable = 'on';
-        end
-
-        function PauseButtonPushed(app)
-            if ~isempty(app.animTimer) && isvalid(app.animTimer) && strcmp(app.animTimer.Running, 'on')
-                stop(app.animTimer);
-            end
-            app.PlayButton.Enable = 'on';
-            app.PauseButton.Enable = 'off';
         end
 
         function StopButtonPushed(app)
@@ -772,12 +833,10 @@ classdef CrystalVibrationApp < handle
             if app.isBuilt
                 app.plotStaticLattice();
             end
-            app.PlayButton.Enable = 'on';
-            app.PauseButton.Enable = 'off';
+            app.PlayPauseButton.Text = 'Play';
+            app.PlayPauseButton.BackgroundColor = [0.30 0.70 0.35];
+            app.PlayPauseButton.Enable = 'on';
             app.StopButton.Enable = 'off';
-        end
-
-        function SpeedSliderValueChanged(app)
         end
 
         function period = speedToPeriod(app)
