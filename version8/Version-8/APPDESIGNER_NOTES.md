@@ -1,18 +1,16 @@
 # The App Designer app: `app1.mlapp`
 
-`app1.mlapp` is the Crystal Vibration Explorer built in App Designer (R2024b). It uses
-the same helper functions as `CrystalVibrationApp.m`, the version of the app written
-entirely in code. It also has the same numerics and the same five tabs: Lattice and
-Modes, Shear Analysis, Phonon Softening, Bond Breaking, Dispersion Surface.
+`app1.mlapp` is the Crystal Vibration Explorer, built in App Designer (R2024b). It has five
+tabs: Lattice and Modes, Shear Analysis, Phonon Softening, Bond Breaking and Dispersion
+Surface. All the numerics live in the helper `.m` files in this folder.
 
 ## Running it
 
 From the `Version-8` folder:
 
 ```matlab
-launch_GUI          % opens app1
-app1                % same thing
-CrystalVibrationApp % the pure-code version, still works
+launch_GUI   % opens app1
+app1         % same thing
 ```
 
 The app must stay in `Version-8`, or that folder must be on the path. It calls
@@ -31,28 +29,32 @@ The Phonon Softening, Bond Breaking and Dispersion Surface tabs are empty in Des
 purpose. `plotShearSoftening`, `plotShearBonds` and `brillouinShearSurface` build their
 contents at run time. The three buttons in the Shear Analysis tab trigger them.
 
-## Component names
+## Component names used by the code
 
-Most components use the names from `CrystalVibrationAppDesigner.m`. The labels, panels and
-top-level grid use the names App Designer gave them automatically. The code only uses one of
-these renamed components, `MorseAlphaLabel`.
+The code refers to components by name, so don't rename these in Design View:
 
-| `CrystalVibrationAppDesigner.m` | `app1.mlapp` |
-| --- | --- |
-| `MainGrid` | `GridLayout` |
-| `ControlPanel` | `ModelandAnimationPanel` |
-| `SupercellLabel` | `SuperCellEditFieldLabel` |
-| `kLabel` | `KEditFieldLabel` |
-| `BondNetworkLabel` | `BondNetworkDropDownLabel` |
-| `AnimationHeaderLabel` | `ModeAnimationLabel` |
-| `ModeLabel` | `VibrationalModeDropDownLabel` |
-| `AmplitudeLabel` | `AmplitudeSliderLabel` |
-| `SpeedLabel` | `PlaybackSpeedSliderLabel` |
-| `ShearStrainLabel` | `EngineeringShearStrainGammaLabel` |
-| `GammaMaxLabel` | `MaxmimumSheerStrainGammaLabel` |
-| `AlphaLabel` | `MorseAlphaLabel` |
+- **Controls:** `NEditField`, `kEditField`, `cutoffDropDown`, `ModeDropDown`,
+  `AmplitudeSlider`, `SpeedSlider`, `PlayPauseButton`, `StopButton`.
+- **Lattice and Modes tab:** `TabGroup`, `LatticeTab`, `PlotAx`, `SpecAx`.
+- **Shear Analysis tab:** `ShearTab`, `ShearSlider`, `RelaxButton`, `RelaxStatusLabel`,
+  `GammaMaxEdit`, `AlphaEdit`, `MorseAlphaLabel`, `PhononPlotsButton`, `BondPlotsButton`,
+  `DispersionButton`, `AnalysisStatusLabel`, `UIAxes3D_NoForce`, `UIAxes3D_WithForce`,
+  `UIAxesMode_NoForce`, `UIAxesMode_WithForce`.
+- **Plot tabs:** `PhononTab`, `BondTab`, `DispersionTab`.
+- **Window and panels:** `UIFigure`, `StatusLabel`, `ModelandAnimationPanel`,
+  `ShearControlPanel` (the last two are used only by `applyDarkTheme`).
 
-`app1.mlapp` also has two empty labels, `Label` and `Label_2`, that the code never uses.
+Everything else, including the two empty labels `Label` and `Label_2`, can be renamed or
+deleted freely.
+
+## Standalone scripts
+
+These run without the app:
+
+- **`runPhononShearAnalysis.m`** runs the same shear sweeps as the Phonon Softening and Bond
+  Breaking tabs, and saves the plots as PNGs in `shear_figures/`.
+- **`runStressStrainSweep.m`** runs the stress-strain analysis. It is the only user of
+  `checkPlasticity`, `compositeTrapz`, `computeAtomicStress` and `shearYieldGap`.
 
 ## Fixes applied to the code in `app1.mlapp`
 

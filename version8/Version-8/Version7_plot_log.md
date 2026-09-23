@@ -1,6 +1,6 @@
 # Version 7 – how every plot is built (what comes from your code, what is assumed)
 
-Run from the app (Shear Analysis window → two green/orange buttons) or from `runPhononShearAnalysis.m`
+Run from the app (Shear Analysis tab → Phonon Softening Plots / Bond Breaking Plots buttons) or from `runPhononShearAnalysis.m`
 (set `cifFile`, saves PNGs to `shear_figures/`). Both call the same functions, so results are identical.
 
 ## 0. Pipeline
