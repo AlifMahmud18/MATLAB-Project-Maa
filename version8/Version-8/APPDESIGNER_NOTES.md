@@ -1,178 +1,90 @@
-# Turning `CrystalVibrationAppDesigner.m` into a `.mlapp`
+# The App Designer app: `app1.mlapp`
 
-`CrystalVibrationAppDesigner.m` is `CrystalVibrationApp.m` rewritten the way App Designer
-writes its own code: `matlab.apps.AppBase` subclass, public component properties, callbacks
-with `(app, event)` signatures wired by `createCallbackFcn`, a generated `createComponents`,
-and the standard constructor/`delete` pair.
+`app1.mlapp` is the Crystal Vibration Explorer built in App Designer (R2024b). It uses
+the same helper functions as `CrystalVibrationApp.m`, the version of the app written
+entirely in code. It also has the same numerics and the same five tabs: Lattice and
+Modes, Shear Analysis, Phonon Softening, Bond Breaking, Dispersion Surface.
 
-A `.mlapp` is a binary (zipped) file, so it cannot be written out by hand — it has to be
-created by App Designer. This file is the source you copy into it.
+## Running it
 
-## Option A — you may not need a `.mlapp` at all
+From the `Version-8` folder:
 
 ```matlab
-CrystalVibrationAppDesigner
+launch_GUI          % opens app1
+app1                % same thing
+CrystalVibrationApp % the pure-code version, still works
 ```
 
-The class runs exactly like `CrystalVibrationApp` does. A `.mlapp` only buys you the
-Design View editor; it is not required to run, share, or package an app.
+The app must stay in `Version-8`, or that folder must be on the path. It calls
+`autoRigidShells`, `generateLatticeGeneral`, `buildDynamicalMatrix`, `jacobiEigenSolver`,
+`applyShearForce`, `relaxShearLattice`, `phononShearSuite`, `plotShearSoftening`,
+`plotShearBonds`, `brillouinShearSurface`, `shearPlotCanvas`, `plotLattice`,
+`plotLatticeWithGradient`, `atomHover`, `getElementDetails`, `getBuiltinCrystalDef`,
+`parseCIFFile` and `parseCrystalFile`.
 
-## Option B — build the `.mlapp`
+The class name is `app1` because the file is called `app1.mlapp`. To rename it, use
+**Save As** in App Designer, which renames the class too. Then change the last line of
+`launch_GUI.m` to match. Renaming the file in a file browser gives an error, because the
+class name inside the file no longer matches the file name.
 
-### 1. Create the app
+The Phonon Softening, Bond Breaking and Dispersion Surface tabs are empty in Design View on
+purpose. `plotShearSoftening`, `plotShearBonds` and `brillouinShearSurface` build their
+contents at run time. The three buttons in the Shear Analysis tab trigger them.
 
-App Designer -> **New -> Blank App**, then **Save As** `CrystalVibrationAppDesigner.mlapp`
-in this folder (`Version-8`). The class name follows the file name, so if you save it under
-a different name, rename the constructor in Code View to match.
+## Component names
 
-### 2. Lay out the components (Design View)
+Most components use the names from `CrystalVibrationAppDesigner.m`. The labels, panels and
+top-level grid use the names App Designer gave them automatically. The code only uses one of
+these renamed components, `MorseAlphaLabel`.
 
-Drag the tree below in, top to bottom, and set each **name** in the Component Browser
-exactly as written. The names matter: App Designer derives the callback names from them,
-so with these names its generated stubs line up with the code you are pasting.
+| `CrystalVibrationAppDesigner.m` | `app1.mlapp` |
+| --- | --- |
+| `MainGrid` | `GridLayout` |
+| `ControlPanel` | `ModelandAnimationPanel` |
+| `SupercellLabel` | `SuperCellEditFieldLabel` |
+| `kLabel` | `KEditFieldLabel` |
+| `BondNetworkLabel` | `BondNetworkDropDownLabel` |
+| `AnimationHeaderLabel` | `ModeAnimationLabel` |
+| `ModeLabel` | `VibrationalModeDropDownLabel` |
+| `AmplitudeLabel` | `AmplitudeSliderLabel` |
+| `SpeedLabel` | `PlaybackSpeedSliderLabel` |
+| `ShearStrainLabel` | `EngineeringShearStrainGammaLabel` |
+| `GammaMaxLabel` | `MaxmimumSheerStrainGammaLabel` |
+| `AlphaLabel` | `MorseAlphaLabel` |
 
-```
-UIFigure                       Position [60 60 1500 880], Name 'Crystal Vibration Explorer', Color white
-└─ MainGrid            GridLayout   ColumnWidth {340,'1x'}  RowHeight {'1x',24}  RowSpacing 6  ColumnSpacing 8
-   ├─ ControlPanel     Panel        row 1, col 1   Title 'Model & Animation'
-   │  └─ ControlGrid   GridLayout   ColumnWidth {'1x'}  Scrollable on  Padding [10 10 10 10]  RowSpacing 6
-   │                                RowHeight {24,32,22,24,22,24,22,24,38,26,22,24,22,50,22,50,34,'1x'}
-   │     ├─ CrystalHeaderLabel     Label          row 1    'Crystal & bond network' (bold)
-   │     ├─ LoadFileButton         Button         row 2    'Load Crystal File...'
-   │     ├─ SupercellLabel         Label          row 3
-   │     ├─ NEditField             NumericEditField row 4  Limits [1 1], Editable off, Value 1
-   │     ├─ kLabel                 Label          row 5
-   │     ├─ kEditField             NumericEditField row 6  Limits [0.001 Inf], Value 1
-   │     ├─ BondNetworkLabel       Label          row 7
-   │     ├─ cutoffDropDown         DropDown       row 8    3 items, default 'Auto (grows shells until rigid)'
-   │     ├─ BuildButton            Button         row 9    'Build & Solve'
-   │     ├─ AnimationHeaderLabel   Label          row 10   'Mode animation' (bold)
-   │     ├─ ModeLabel              Label          row 11
-   │     ├─ ModeDropDown           DropDown       row 12   Enable off
-   │     ├─ AmplitudeLabel         Label          row 13
-   │     ├─ AmplitudeSlider        Slider         row 14   Limits [0 1], Value 0.25
-   │     ├─ SpeedLabel             Label          row 15
-   │     ├─ SpeedSlider            Slider         row 16   Limits [0.1 10], Value 2
-   │     └─ TransportGrid          GridLayout     row 17   ColumnWidth {'1x','1x'}, Padding 0
-   │        ├─ PlayPauseButton     Button         col 1    'Play', Enable off
-   │        └─ StopButton          Button         col 2    'Stop', Enable off
-   ├─ TabGroup         TabGroup     row 1, col 2
-   │  ├─ LatticeTab              Tab   'Lattice & Modes'
-   │  │  └─ LatticeGrid          GridLayout   ColumnWidth {'5x','4x'}  RowHeight {'1x'}
-   │  │     ├─ PlotAx            UIAxes  row 1, col 1
-   │  │     └─ SpecAx            UIAxes  row 1, col 2
-   │  ├─ ShearTab                Tab   'Shear Analysis'
-   │  │  └─ ShearGrid            GridLayout   ColumnWidth {340,'1x','1x'}  RowHeight {'1x','1x'}
-   │  │     ├─ ShearControlPanel Panel   rows 1-2, col 1   Title 'Shear Control Panel'
-   │  │     │  └─ ShearControlGrid  GridLayout  ColumnWidth {'1x'}  Scrollable on
-   │  │     │                       RowHeight {22,50,34,44,26,28,34,34,34,34,96,'1x'}
-   │  │     │     ├─ ShearStrainLabel    Label   row 1
-   │  │     │     ├─ ShearSlider         Slider  row 2   Limits [0 0.5], Value 0
-   │  │     │     ├─ RelaxButton         Button  row 3
-   │  │     │     ├─ RelaxStatusLabel    Label   row 4   WordWrap on, VerticalAlignment top
-   │  │     │     ├─ V7HeaderLabel       Label   row 5   (bold)
-   │  │     │     ├─ GammaRowGrid        GridLayout row 6  ColumnWidth {'1x',110}, Padding 0
-   │  │     │     │  ├─ GammaMaxLabel    Label             col 1
-   │  │     │     │  └─ GammaMaxEdit     NumericEditField  col 2  Limits [0.05 1.5], Value 0.5
-   │  │     │     ├─ PhononPlotsButton   Button  row 7
-   │  │     │     ├─ BondPlotsButton     Button  row 8
-   │  │     │     ├─ DispersionButton    Button  row 9
-   │  │     │     ├─ AlphaRowGrid        GridLayout row 10  ColumnWidth {'1x',80}, Padding 0
-   │  │     │     │  ├─ AlphaLabel       Label             col 1  WordWrap on
-   │  │     │     │  └─ AlphaEdit        NumericEditField  col 2  Limits [1 20], Value 4
-   │  │     │     └─ AnalysisStatusLabel Label   row 11  WordWrap on, VerticalAlignment top
-   │  │     ├─ UIAxes3D_NoForce      UIAxes  row 1, col 2
-   │  │     ├─ UIAxes3D_WithForce    UIAxes  row 1, col 3
-   │  │     ├─ UIAxesMode_NoForce    UIAxes  row 2, col 2
-   │  │     └─ UIAxesMode_WithForce  UIAxes  row 2, col 3
-   │  ├─ PhononTab               Tab   'Phonon Softening'     (leave empty)
-   │  ├─ BondTab                 Tab   'Bond Breaking'        (leave empty)
-   │  └─ DispersionTab           Tab   'Dispersion Surface'   (leave empty)
-   └─ StatusLabel      Label        row 2, cols 1-2
-```
+`app1.mlapp` also has two empty labels, `Label` and `Label_2`, that the code never uses.
 
-The last three tabs stay empty on purpose: `plotShearSoftening`, `plotShearBonds` and
-`brillouinShearSurface` build their contents into them at run time.
+## Fixes applied to the code in `app1.mlapp`
 
-For the exact colours, tooltips and default text of every component, read `createComponents`
-in `CrystalVibrationAppDesigner.m` — it is written in App Designer's own generated style, so
-it reads as a line-by-line checklist. You cannot paste it into App Designer: App Designer
-generates that section itself and keeps it read-only in Code View.
+The design was kept exactly as drawn: layout, colours and component properties are
+unchanged. Three things in the code were fixed:
 
-### 3. Paste the private properties
+1. **`AlphaEditValueChanged` crashed.** It wrote to `app.AlphaLabel`, which does not exist
+   in this app, so changing Morse alpha raised an error. It now updates `app.MorseAlphaLabel`,
+   for example `Morse Alpha (break 17.3%)` for alpha = 4. The label is short enough to fit
+   its column. The percentage is the bond stretch at which a Morse bond breaks, ln 2 / alpha.
+2. **Closing the window raised an error.** `UIFigureCloseRequest` called
+   `app.applyDarkTheme()` *after* `delete(app)`, when the app no longer exists. That call is
+   now commented out. `applyDarkTheme` itself is kept, but nothing calls it, because the call
+   in `startupFcn` was already commented out. The theme is set in Design View instead.
+3. **Status text was unreadable on the dark background.** The code coloured the bottom
+   status bar and the Relax status label dark blue, dark green, dark red and grey, the
+   colours of the old white layout. They are now light versions of the same colours:
+   working = light blue, done = light green, failed = light red, idle = light grey. The grey
+   placeholder text in the three empty plot tabs keeps its grey, because those tabs are light.
 
-Code View -> **Property -> Private Property**. App Designer makes an empty
-`properties (Access = private)` block; replace its contents with the block of the same name
-from `CrystalVibrationAppDesigner.m` (`latticeVectors` through `AnimFrameRateHz`).
+## Suggested tidy-ups in Design View
 
-### 4. Paste the helper functions
+These are component properties, so they have to be changed in Design View. Nothing breaks
+without them.
 
-Code View -> **Function -> Private Function**, once per helper. Rename the stub, then paste
-the body. The helpers are, in file order:
-
-`resetAnalysisTabs`, `clearAnalysisTab`, `setShearControlsEnabled`, `refreshShearViewIfNeeded`,
-`runAnalysisPlots`, `updateShearAnalysis`, `populateModeDropdown`, `getSelectedModeIndex`,
-`plotFrequencySpectrum`, `plotStaticLattice`, `highlightModeOnSpectrum`, `speedToPeriod`,
-`animationTick`, `stopTimerIfRunning`, `setStatus`, `showAlert`, `makeHoverLabels`.
-
-Two of them have non-default signatures — keep them as written:
-`clearAnalysisTab(~, tab, kind)` and `labels = makeHoverLabels(~, elementNames, masses)`.
-
-### 5. Add the callbacks
-
-Right-click the component -> **Callbacks -> Add ... callback**. With the names from step 2,
-App Designer generates precisely these stubs; paste the matching body into each.
-
-| Component | Callback to add | Generated name |
-| --- | --- | --- |
-| UIFigure | CloseRequestFcn | `UIFigureCloseRequest` |
-| UIFigure | StartupFcn | `startupFcn` |
-| LoadFileButton | ButtonPushedFcn | `LoadFileButtonPushed` |
-| BuildButton | ButtonPushedFcn | `BuildButtonPushed` |
-| ModeDropDown | ValueChangedFcn | `ModeDropDownValueChanged` |
-| PlayPauseButton | ButtonPushedFcn | `PlayPauseButtonPushed` |
-| StopButton | ButtonPushedFcn | `StopButtonPushed` |
-| TabGroup | SelectionChangedFcn | `TabGroupSelectionChanged` |
-| ShearSlider | ValueChangedFcn | `ShearSliderValueChanged` |
-| RelaxButton | ButtonPushedFcn | `RelaxButtonPushed` |
-| PhononPlotsButton | ButtonPushedFcn | `PhononPlotsButtonPushed` |
-| BondPlotsButton | ButtonPushedFcn | `BondPlotsButtonPushed` |
-| DispersionButton | ButtonPushedFcn | `DispersionButtonPushed` |
-| AlphaEdit | ValueChangedFcn | `AlphaEditValueChanged` |
-
-`startupFcn` is added from the **app** (right-click `app.UIFigure` in the Component Browser),
-not from a control.
-
-### 6. Run it
-
-`.mlapp` must sit in `Version-8` (or have it on the path): the app calls `autoRigidShells`,
-`buildDynamicalMatrix`, `jacobiEigenSolver`, `applyShearForce`, `relaxShearLattice`,
-`plotShearSoftening`, `plotShearBonds`, `brillouinShearSurface`, `shearPlotCanvas`,
-`plotLattice`, `plotLatticeWithGradient`, `atomHover`, `getElementDetails`, `parseCIFFile`
-and `parseCrystalFile`.
-
-## Differences from `CrystalVibrationApp.m`
-
-The GUI and the numerics are identical. Only the plumbing changed, to match what App
-Designer expects:
-
-- `createComponents` is flat rather than split into `buildControlColumn` / `buildLatticeTab` /
-  `buildShearTab` / `buildShearControls`, because App Designer generates one flat function.
-  Every container therefore needs a name, so the layout grids and the static labels are now
-  named properties (`MainGrid`, `ControlGrid`, `kLabel`, ...) instead of local variables.
-- Callbacks take `(app, event)` and are wired with `createCallbackFcn` instead of anonymous
-  functions. `updateShearAnalysis` now reads `app.ShearSlider.Value` through
-  `ShearSliderValueChanged` rather than taking the value from an event struct, and the
-  inline `AlphaEdit` handler became the named `AlphaEditValueChanged`.
-- `TabSelectionChanged` is renamed `TabGroupSelectionChanged`, and `openDispersionSurface`
-  is renamed `DispersionButtonPushed`, so both match App Designer's naming.
-- `makeHoverLabels` moved from a local function after the `classdef` to a private method
-  (App Designer has no place for local functions), so calls are now `app.makeHoverLabels(...)`.
-- `onClose` became the `UIFigureCloseRequest` callback, and `AnimFrameRateHz` moved from a
-  `Constant` block into the ordinary private properties, since App Designer's property
-  editor only creates plain public/private blocks.
-
-One consequence worth knowing: App Designer generates `delete(app)` and keeps it read-only,
-so the animation timer is stopped in `UIFigureCloseRequest` (closing the window) rather than
-in `delete`. If you tear the app down with `delete(app)` from the command line instead of
-closing the window, stop the timer yourself first.
+- Typos: `Maxmimum Sheer Strain (Gamma)` should be `Maximum Shear Strain (Gamma)`, and
+  `3D Dispersion Surfce` should be `3D Dispersion Surface`.
+- The Shear Analysis control panel is titled `Panel`, and the window is titled `MATLAB App`.
+- The build button says **Solve and Build**, but the status and alert messages say
+  "Build & Solve". Rename the button, or leave it; it only affects wording.
+- `RelaxStatusLabel` has `WordWrap` off. The residual-force message it shows after
+  **Relax** is two sentences long, so it gets cut off. Turn `WordWrap` on.
+- `MorseAlphaLabel` starts as plain `Morse Alpha` and shows the break stretch only after
+  you change the value. To show it from the start, set its Text to
+  `Morse Alpha (break 17.3%)`, which matches the default alpha of 4.

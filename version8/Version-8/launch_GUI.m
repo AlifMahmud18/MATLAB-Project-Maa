@@ -1,4 +1,5 @@
 % launch_GUI.m - run this to open the Crystal Vibration Explorer.
-% Creates a CrystalVibrationApp: Load Crystal File... (or use the default), then Build & Solve.
+% Opens the App Designer app (app1.mlapp): Load Crystal File (or use the default), then Solve and Build.
+% The same app written purely in code is still available:  app = CrystalVibrationApp;
 
-app = CrystalVibrationApp; %#ok<NASGU>
+app = app1; %#ok<NASGU>
